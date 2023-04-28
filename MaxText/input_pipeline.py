@@ -219,7 +219,8 @@ def preprocess_dataset(config: ml_collections.ConfigDict,
     eval_batch_size = batch_size
 
   def filter_keys(record):
-    return {'inputs': record['inputs'], 'targets': record['targets']}
+    return {'inputs': record['inputs'][:config.max_target_length], 'targets': record['targets'][:config.max_target_length]}
+  
   train_ds = train_ds.map(filter_keys,num_parallel_calls=tf.data.AUTOTUNE)
   eval_ds = eval_ds.map(filter_keys,num_parallel_calls=tf.data.AUTOTUNE)
 
