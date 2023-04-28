@@ -32,9 +32,11 @@ from layers import Transformer
 import pyconfig
 from input_pipeline import get_datasets
 from input_pipeline import preprocess_dataset
+from decode import decode_tokens, encode_strings, predict_step
 import max_utils
 import temperature_sampler
 import checkpointing
+import functools
 
 
 
@@ -300,7 +302,7 @@ def train_loop(config, state=None):
   train_ds, eval_ds = get_datasets(
       config=config,
   )
-  train_iter, _, _, _ = preprocess_dataset(
+  train_iter, _, _, sp_tokenizer = preprocess_dataset(
     config,
     mesh,
     train_ds, eval_ds,
@@ -324,6 +326,16 @@ def train_loop(config, state=None):
     static_argnums=(0,1,),
     donate_argnums=2)
 
+  p_predict_step = pjit(
+    functools.partial(predict_step, model=model, config=config),
+    in_axis_resources=(P(None, None), state_mesh_annotations, None),
+    out_axis_resources=None
+  )
+
+  # Encode the demo prompt.
+  tokenized_prompts = encode_strings(
+      [config.prompt], config.max_predict_length, sp_tokenizer)
+
   example_batch = None
   last_step_completion = datetime.datetime.now()
 
@@ -340,6 +352,12 @@ def train_loop(config, state=None):
     record_scalar_metrics(metrics, new_time - last_step_completion,  per_device_tflops, learning_rate_schedule(step))
     write_metrics(writer, metrics, step, config)
     last_step_completion = new_time
+
+    if step > 0 and step % config.predict_period == 0:
+      with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        seqs = p_predict_step(tokenized_prompts, state, nextrng)
+        decoded_string, num_tokens_decoded = decode_tokens(np.array(seqs)[0], sp_tokenizer, config.eos_id)
+        max_logging.log(f"Decoding #{step} (num tokens {num_tokens_decoded}):\n\t{decoded_string}")
 
     if step > 0 and step % config.save_period == 0 and checkpoint_manager is not None:
       checkpoint_manager.save(step, state)
