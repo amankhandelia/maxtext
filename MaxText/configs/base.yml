@@ -45,7 +45,7 @@ param_scan_axis: 1
 record_internal_nn_metrics: 0
 
 # Output directory
-base_output_directory: "gs://max-experiments/"
+base_output_directory: "/home/khandelia1000/experiments"
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']
@@ -68,19 +68,19 @@ dcn_data_parallelism: 1
 dcn_fsdp_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: 4
+ici_fsdp_parallelism: 8
 ici_tensor_parallelism: 1
 
 
 # Dataset
 # Replace with your path given as argument in download_dataset.sh
-dataset_path: "gs://maxtext-dataset/"
-vocab_size: 32_768 # powers of 2 for sharding
+dataset_path: "/home/khandelia1000/tensorflow_datasets/"
+vocab_size: 4_096 # powers of 2 for sharding
 vocab_relative_path: "vocabs"  # Assumes we're allowed
-dataset_name: 'c4/en:3.0.1'
-eval_dataset_name: 'c4/en:3.0.1'
-eval_split: 'validation'
-per_device_batch_size: 32
+dataset_name: 'desiai/samachaar'
+eval_dataset_name: 'desiai/samachaar'
+eval_split: 
+per_device_batch_size: 16
 eval_per_device_batch_size: 0
 max_corpus_chars: 10_000_000
 
@@ -88,6 +88,7 @@ max_corpus_chars: 10_000_000
 steps: 150_001
 log_period: 10_000
 save_period: 10_000
+predict_period: 1_000
 learning_rate: 3.e-5
 warmup_steps: 15_000
 
@@ -104,7 +105,7 @@ sampling_temperature: 0.6
 sampling_top_k: 20
 eos_id: 2  # sentencepiece default
 # Prompt for language model sampling.
-prompt: "I love to "
+prompt: "इतिहास में पहली बार "
 
 enable_profiler: False
 enable_checkpointing: True
