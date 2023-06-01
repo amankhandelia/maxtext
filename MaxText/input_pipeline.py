@@ -17,6 +17,7 @@
 """Input pipeline for a LM1B dataset."""
 
 import os
+import re
 from typing import Optional
 import functools
 
@@ -37,47 +38,49 @@ AUTOTUNE = tf.data.experimental.AUTOTUNE
 # Right-shifting token inputs for teacher-forced training.
 # -----------------------------------------------------------------------------
 
+
 def shift_right_tf(x, axis=1):
-  """Shift the input to the right by padding and slicing on axis."""
-  pad_widths = [(0, 0)] * len(x.shape)
-  pad_widths[axis] = (1, 0)
-  slices = [slice(None),] * len(x.shape)
-  slices[axis] = slice(0, -1)
-  padded = tf.pad(
-      x,
-      tf.constant(pad_widths),
-      mode='constant',
-      constant_values=tf.constant(0, x.dtype))
-  return padded[tuple(slices)]
+    """Shift the input to the right by padding and slicing on axis."""
+    pad_widths = [(0, 0)] * len(x.shape)
+    pad_widths[axis] = (1, 0)
+    slices = [
+        slice(None),
+    ] * len(x.shape)
+    slices[axis] = slice(0, -1)
+    padded = tf.pad(x, tf.constant(pad_widths), mode="constant", constant_values=tf.constant(0, x.dtype))
+    return padded[tuple(slices)]
 
 
 def shift_inputs_tf(x, segment_ids=None, axis=1):
-  """Shift inputs and replace EOS by 0 for packed inputs."""
-  shifted = shift_right_tf(x, axis=axis)
-  # For packed targets, the first shifted token of a new sequence is made
-  # 0, rather than being the EOS token for the last sequence.
-  if segment_ids is not None:
-    shifted *= tf.cast(
-        segment_ids == shift_right_tf(segment_ids, axis=axis), x.dtype
-    )
-  return shifted
+    """Shift inputs and replace EOS by 0 for packed inputs."""
+    shifted = shift_right_tf(x, axis=axis)
+    # For packed targets, the first shifted token of a new sequence is made
+    # 0, rather than being the EOS token for the last sequence.
+    if segment_ids is not None:
+        shifted *= tf.cast(segment_ids == shift_right_tf(segment_ids, axis=axis), x.dtype)
+    return shifted
+
 
 def shift_data(x, axis=0, segmented=True):
-  segment_ids = x['inputs_segmentation'] if segmented else None
-  x['inputs'] = shift_inputs_tf(x['inputs'], segment_ids=segment_ids, axis=axis)
-  return x
+    segment_ids = x["inputs_segmentation"] if segmented else None
+    x["inputs"] = shift_inputs_tf(x["inputs"], segment_ids=segment_ids, axis=axis)
+    return x
+
+
+def clean_html_tags(text):
+    cleaned_text = re.sub("<[^<]+?>", "", text)
+    return cleaned_text
 
 
 def normalize_features(ds):
-  """Normalize text feature keys."""
-  def _normalize_features(features):
-    features['inputs'] = features.pop('Body')
-    features['targets'] = features['inputs']
-    return features
+    """Normalize text feature keys."""
 
-  return ds.map(
-      _normalize_features,
-      num_parallel_calls=AUTOTUNE)
+    def _normalize_features(features):
+        features["inputs"] = tf.strings.regex_replace(features.pop("Body"), "<[^<]+?>", "")
+        features["targets"] = features["inputs"]
+        return features
+
+    return ds.map(_normalize_features, num_parallel_calls=AUTOTUNE)
 
 
 # -----------------------------------------------------------------------------
@@ -86,174 +89,169 @@ def normalize_features(ds):
 
 
 def preprocessing_pipeline(
-  dataset,
-  batch_size: int,
-  global_mesh,
-  shuffle: bool,
-  num_epochs: Optional[int] = 1,
-  pack_examples: bool = True,
-  shuffle_buffer_size: int = 1024,
-  max_length: int = 512,
-  shift: bool = True,
-  drop_remainder: bool = True,
-  prefetch_size = tf.data.experimental.AUTOTUNE,
-  data_sharding = None
+    dataset,
+    batch_size: int,
+    global_mesh,
+    shuffle: bool,
+    num_epochs: Optional[int] = 1,
+    pack_examples: bool = True,
+    shuffle_buffer_size: int = 1024,
+    max_length: int = 512,
+    shift: bool = True,
+    drop_remainder: bool = True,
+    prefetch_size=tf.data.experimental.AUTOTUNE,
+    data_sharding=None,
 ):
-  """Shuffle and batch/pack the given dataset."""
+    """Shuffle and batch/pack the given dataset."""
 
-  # Max length filter.
-  def length_filter(max_len):
-    def filter_fn(x):
-      source, target = x['inputs'], x['targets']
-      l = tf.maximum(tf.shape(source)[0], tf.shape(target)[0])
-      return tf.less(l, max_len + 1)
-    return filter_fn
+    # Max length filter.
+    def length_filter(max_len):
+        def filter_fn(x):
+            source, target = x["inputs"], x["targets"]
+            l = tf.maximum(tf.shape(source)[0], tf.shape(target)[0])
+            return tf.less(l, max_len + 1)
 
-  if max_length > 0:
-    dataset = dataset.filter(length_filter(max_length))
+        return filter_fn
 
-  # Shuffle and repeat.
-  if shuffle:
-    dataset = dataset.shuffle(shuffle_buffer_size)
+    if max_length > 0:
+        dataset = dataset.filter(length_filter(max_length))
 
-  dataset = dataset.repeat(num_epochs)
+    # Shuffle and repeat.
+    if shuffle:
+        dataset = dataset.shuffle(shuffle_buffer_size)
 
-  # Perform greedy sequence packing
-  if pack_examples:
-    dataset = sequence_packing.pack_dataset(dataset, max_length)
+    dataset = dataset.repeat(num_epochs)
 
-  # Shift inputs for teacher-forced training
-  if shift:
-    dataset = dataset.map(
-      functools.partial(shift_data, axis=0, segmented=pack_examples),
-      num_parallel_calls=tf.data.AUTOTUNE,
-      deterministic=True)
+    # Perform greedy sequence packing
+    if pack_examples:
+        dataset = sequence_packing.pack_dataset(dataset, max_length)
 
-  # Multihost dataloading: sharding and jax.Array prep function
-  dataset_structure = tf.data.experimental.get_structure(dataset)
-  global_data_shape = jax.tree_map(
-      lambda x: P(batch_size, max_length), dataset_structure
-  )
-  data_axes = jax.tree_map(lambda x: P(*data_sharding), dataset_structure)
+    # Shift inputs for teacher-forced training
+    if shift:
+        dataset = dataset.map(
+            functools.partial(shift_data, axis=0, segmented=pack_examples),
+            num_parallel_calls=tf.data.AUTOTUNE,
+            deterministic=True,
+        )
 
+    # Multihost dataloading: sharding and jax.Array prep function
+    dataset_structure = tf.data.experimental.get_structure(dataset)
+    global_data_shape = jax.tree_map(lambda x: P(batch_size, max_length), dataset_structure)
+    data_axes = jax.tree_map(lambda x: P(*data_sharding), dataset_structure)
 
-  assert (
-        batch_size % global_mesh.size == 0
-    ), 'Batch size should be divisible number of global devices.'
+    assert batch_size % global_mesh.size == 0, "Batch size should be divisible number of global devices."
 
-  # Batch examples.
-  if pack_examples:
-    dataset = dataset.batch(batch_size // jax.process_count(), drop_remainder=drop_remainder)
-  else:
-    # simple (static-shape) padded batching
-    dataset = dataset.padded_batch(
-        batch_size // jax.process_count(),
-        padded_shapes={'inputs': max_length, 'targets': max_length},
-        padding_values={'inputs': 0, 'targets': 0},
-        drop_remainder=drop_remainder)
+    # Batch examples.
+    if pack_examples:
+        dataset = dataset.batch(batch_size // jax.process_count(), drop_remainder=drop_remainder)
+    else:
+        # simple (static-shape) padded batching
+        dataset = dataset.padded_batch(
+            batch_size // jax.process_count(),
+            padded_shapes={"inputs": max_length, "targets": max_length},
+            padding_values={"inputs": 0, "targets": 0},
+            drop_remainder=drop_remainder,
+        )
 
-  if prefetch_size:
-    dataset = dataset.prefetch(prefetch_size)
+    if prefetch_size:
+        dataset = dataset.prefetch(prefetch_size)
 
-  multihost_gen = (
-      multihost_dataloading.get_batch_sharded_data_pipeline(
-          dataset, data_sharding, global_data_shape, global_mesh, data_axes
-      )
-  )
-  # Return multi-host jax.Array prep iterator
-  return multihost_gen
+    multihost_gen = multihost_dataloading.get_batch_sharded_data_pipeline(
+        dataset, data_sharding, global_data_shape, global_mesh, data_axes
+    )
+    # Return multi-host jax.Array prep iterator
+    return multihost_gen
 
 
 def get_datasets(
-  config: ml_collections.ConfigDict,
-  read_config = None,
+    config: ml_collections.ConfigDict,
+    read_config=None,
 ):
-  """Load and return dataset of batched examples for use during training."""
-  # Training dataset.
-  train_ds_builder = huggingface_dataset_builder.HuggingfaceDatasetBuilder(hf_repo_id='desiai/samachaar')
-  train_ds = train_ds_builder.as_dataset(split="train", read_config=read_config, shuffle_files=False)
-  # shard the dataset as soon as it is loaded
-  train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
-  train_ds = normalize_features(train_ds)
+    """Load and return dataset of batched examples for use during training."""
+    # Training dataset.
+    builder = tfds.builder_from_directory(config.dataset_path)
+    train_ds, eval_ds = builder.as_dataset(
+        split=["train[:99%]", "train[99%:]"], read_config=read_config, shuffle_files=False
+    )
+    # shard the dataset as soon as it is loaded
+    train_ds = train_ds.shard(num_shards=jax.process_count(), index=jax.process_index())
+    train_ds = normalize_features(train_ds)
 
-#   # Evaluation dataset.
-#   if config.eval_dataset_name:
-#     eval_ds_builder = tfds.builder(config.eval_dataset_name)
-#   else:
-#     eval_ds_builder = train_ds_builder
-#   # eval_data = get_raw_dataset(eval_ds_builder, config.eval_split)
-#   eval_ds = eval_ds_builder.as_dataset(split=config.eval_split,
-#                                           read_config = read_config,
-#                                           shuffle_files=False)
-#   eval_ds = eval_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
-#   eval_ds = normalize_features(eval_ds)
+    eval_ds = eval_ds.shard(num_shards=jax.process_count(), index=jax.process_index())
+    eval_ds = normalize_features(eval_ds)
 
-  return train_ds, train_ds
+    return train_ds, eval_ds
 
-def preprocess_dataset(config: ml_collections.ConfigDict,
-                        global_mesh,
-                        train_ds, eval_ds,
-                        vocab_path: Optional[str] = None,):
-  """Pre-process the dataset and return iterators"""
-  if vocab_path is None:
-    vocab_path = os.path.expanduser('~/lm1b_sentencepiece_model')
 
-  # Train or load tokenizer
-  sp_tokenizer = tokenizer.load_or_train_tokenizer(
-      train_ds,
-      vocab_path=vocab_path,
-      vocab_size=config.vocab_size,
-      max_corpus_chars=config.max_corpus_chars)
+def preprocess_dataset(
+    config: ml_collections.ConfigDict,
+    global_mesh,
+    train_ds,
+    eval_ds,
+    vocab_path: Optional[str] = None,
+):
+    """Pre-process the dataset and return iterators"""
+    if vocab_path is None:
+        vocab_path = os.path.expanduser("~/lm1b_sentencepiece_model")
 
-  # Tokenize data.
-  train_ds = train_ds.map(
-      tokenizer.TokenizeOp(sp_tokenizer), num_parallel_calls=AUTOTUNE)
-  eval_ds = eval_ds.map(
-      tokenizer.TokenizeOp(sp_tokenizer), num_parallel_calls=AUTOTUNE)
+    # Train or load tokenizer
+    sp_tokenizer = tokenizer.load_or_train_tokenizer(
+        train_ds, vocab_path=vocab_path, vocab_size=config.vocab_size, max_corpus_chars=config.max_corpus_chars
+    )
 
-  # Set global batch size.
-  batch_size = config.per_device_batch_size * global_mesh.size
-  if config.eval_per_device_batch_size > 0:
-    eval_batch_size = config.eval_per_device_batch_size * global_mesh.size
-  else:
-    eval_batch_size = batch_size
+    # Tokenize data.
+    train_ds = train_ds.map(tokenizer.TokenizeOp(sp_tokenizer), num_parallel_calls=AUTOTUNE)
+    eval_ds = eval_ds.map(tokenizer.TokenizeOp(sp_tokenizer), num_parallel_calls=AUTOTUNE)
 
-  def filter_keys(record):
-    return {'inputs': record['inputs'][:config.max_target_length], 'targets': record['targets'][:config.max_target_length]}
-  
-  train_ds = train_ds.map(filter_keys,num_parallel_calls=tf.data.AUTOTUNE)
-  eval_ds = eval_ds.map(filter_keys,num_parallel_calls=tf.data.AUTOTUNE)
+    # Set global batch size.
+    batch_size = config.per_device_batch_size * global_mesh.size
+    if config.eval_per_device_batch_size > 0:
+        eval_batch_size = config.eval_per_device_batch_size * global_mesh.size
+    else:
+        eval_batch_size = batch_size
 
-  train_iter = preprocessing_pipeline(
-      train_ds,
-      batch_size,
-      global_mesh,
-      shuffle=True,
-      num_epochs=None,
-      pack_examples=True,
-      max_length=config.max_target_length,
-      shift=True,
-      data_sharding = config.data_sharding)
+    def filter_keys(record):
+        return {
+            "inputs": record["inputs"][: config.max_target_length],
+            "targets": record["targets"][: config.max_target_length],
+        }
 
-  eval_iter = preprocessing_pipeline(
-      eval_ds,
-      eval_batch_size,
-      global_mesh,
-      shuffle=False,
-      pack_examples=False,
-      max_length=config.max_eval_target_length,
-      shift=False,
-      data_sharding = config.data_sharding)
+    train_ds = train_ds.map(filter_keys, num_parallel_calls=tf.data.AUTOTUNE)
+    eval_ds = eval_ds.map(filter_keys, num_parallel_calls=tf.data.AUTOTUNE)
 
-  predict_iter = preprocessing_pipeline(
-      eval_ds,
-      eval_batch_size,
-      global_mesh,
-      shuffle=False,
-      pack_examples=False,
-      max_length=config.max_predict_length,
-      shift=False,
-      drop_remainder=False,
-      data_sharding = config.data_sharding)
+    train_iter = preprocessing_pipeline(
+        train_ds,
+        batch_size,
+        global_mesh,
+        shuffle=True,
+        num_epochs=None,
+        pack_examples=True,
+        max_length=config.max_target_length,
+        shift=True,
+        data_sharding=config.data_sharding,
+    )
 
-  return train_iter, eval_iter, predict_iter, sp_tokenizer
+    eval_iter = preprocessing_pipeline(
+        eval_ds,
+        eval_batch_size,
+        global_mesh,
+        shuffle=False,
+        pack_examples=False,
+        max_length=config.max_eval_target_length,
+        shift=False,
+        data_sharding=config.data_sharding,
+    )
+
+    predict_iter = preprocessing_pipeline(
+        eval_ds,
+        eval_batch_size,
+        global_mesh,
+        shuffle=False,
+        pack_examples=False,
+        max_length=config.max_predict_length,
+        shift=False,
+        drop_remainder=False,
+        data_sharding=config.data_sharding,
+    )
+
+    return train_iter, eval_iter, predict_iter, sp_tokenizer

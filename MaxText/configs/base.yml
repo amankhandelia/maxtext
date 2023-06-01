@@ -74,8 +74,8 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with your path given as argument in download_dataset.sh
-dataset_path: "/home/khandelia1000/tensorflow_datasets/"
-vocab_size: 4_096 # powers of 2 for sharding
+dataset_path: "/dev/shm/tensorflow_datasets/desiai__samachaar/0.0.0"
+vocab_size: 16_384 # powers of 2 for sharding
 vocab_relative_path: "vocabs"  # Assumes we're allowed
 dataset_name: 'desiai/samachaar'
 eval_dataset_name: 'desiai/samachaar'
@@ -85,7 +85,7 @@ eval_per_device_batch_size: 0
 max_corpus_chars: 10_000_000
 
 # Training loop
-steps: 150_001
+steps: 850_001
 log_period: 10_000
 save_period: 10_000
 predict_period: 1_000
